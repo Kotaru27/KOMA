@@ -63,7 +63,8 @@ final class Library {
         }
         out.sort((a,b)->Rules.natural(a.name,b.name));return out;
     }
-    void cache(String root,List<Manga> list){try{JSONArray a=new JSONArray();for(Manga m:list)a.put(m.json());prefs.edit().putString("index:"+root,a.toString()).apply();}catch(JSONException ignored){}}
+    long added(Manga m){long first=prefs.getLong("added:"+m.uri,0);if(first>0)return first;long newest=0;for(Chapter c:m.chapters)newest=Math.max(newest,c.modified);return newest;}
+    void cache(String root,List<Manga> list){try{JSONArray a=new JSONArray();SharedPreferences.Editor e=prefs.edit();long now=System.currentTimeMillis();for(Manga m:list){a.put(m.json());if(!prefs.contains("added:"+m.uri))e.putLong("added:"+m.uri,now);}e.putString("index:"+root,a.toString()).apply();}catch(JSONException ignored){}}
     List<Manga> cached(String root){
         List<Manga> out=new ArrayList<>();try{JSONArray a=new JSONArray(prefs.getString("index:"+root,"[]"));for(int i=0;i<a.length();i++){JSONObject o=a.getJSONObject(i);Manga m=new Manga(o.getString("name"),o.getString("uri"));JSONArray b=o.getJSONArray("chapters");for(int j=0;j<b.length();j++)m.chapters.add(Chapter.parse(b.getJSONObject(j)));out.add(m);}}catch(JSONException ignored){}return out;
     }

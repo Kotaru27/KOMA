@@ -2,6 +2,11 @@
 
 Clean-room Android implementation: Java 17, AndroidX RecyclerView and ViewPager2, Storage Access Framework, no network permission, accounts, advertisements or analytics.
 
+## 1.1 Interface refresh
+- Responsive local manga cover grid, searchable manga and chapters, A–Z/recently read/recently added sorting (first indexed date), chapter list and cover-based history.
+- Reader is the initial screen even after selecting a folder; tap controls fade in/out. Cover generation uses a separate cancellable worker and bounded local caches, with a placeholder for unsupported or oversized archives.
+- Reading controls update only when visible and changed; redundant position saves are skipped. Physical-device refresh-rate and frame pacing validation remain required.
+
 ## Build
 Use JDK 17, Gradle 8.9 and Android SDK 35. Run `gradle testDebugUnitTest lintDebug assembleDebug` and `gradle connectedDebugAndroidTest` with an emulator attached. GitHub Actions runs these checks, verifies the APK signature, and publishes a run-specific debug APK only on success. Debug application IDs are unique per CI run/attempt; production application ID is `com.koma.reader`. Release signing requires a persistent private keystore supplied via KOMA_KEYSTORE, KOMA_STORE_PASSWORD, KOMA_KEY_ALIAS and KOMA_KEY_PASSWORD. Never commit a keystore or credentials.
 
