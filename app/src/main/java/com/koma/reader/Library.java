@@ -53,7 +53,7 @@ final class Library {
         if(!permission(root,false))throw new SecurityException("Folder access expired");
         Uri tree=Uri.parse(root);String id=DocumentsContract.getTreeDocumentId(tree);
         List<Manga> out=new ArrayList<>();Set<String> visited=new HashSet<>();
-        ArrayDeque<String[]> stack=new ArrayDeque<>();stack.push(new String[]{id,id.substring(id.lastIndexOf('/')+1)});
+        ArrayDeque<String[]> stack=new ArrayDeque<>();stack.push(new String[]{id,id.substring(Math.max(id.lastIndexOf('/'),id.lastIndexOf(':'))+1)});
         while(!stack.isEmpty()){
             if(Thread.currentThread().isInterrupted())throw new InterruptedIOException();
             String[] p=stack.pop();if(!visited.add(p[0]))continue;
@@ -75,7 +75,7 @@ final class Library {
     void save(Manga m,Chapter c,int page,int offset,int total){try{prefs.edit().putString("pos:"+m.uri,new JSONObject().put("chapter",c.uri).put("name",c.name).put("page",page).put("offset",offset).put("total",total).put("time",System.currentTimeMillis()).toString()).putString("active",m.uri).apply();}catch(JSONException ignored){}}
     String masksKey(String hash){return "coverage:"+hash;}
     int[] coverage(String hash,int count){int[] a=new int[count];String s=prefs.getString(masksKey(hash),"");String[] parts=s.split(",");if(parts.length==count)try{for(int i=0;i<count;i++)a[i]=Integer.parseInt(parts[i]);}catch(NumberFormatException e){Arrays.fill(a,0);}return a;}
-    void saveCoverage(String hash,int[] masks){StringBuilder s=new StringBuilder();boolean complete=masks.length>0;for(int i=0;i<masks.length;i++){if(i>0)s.append(',');s.append(masks[i]);complete &= masks[i]==Rules.FULL;}prefs.edit().putString(masksKey(hash),s.toString()).apply();}
+    void saveCoverage(String hash,int[] masks){StringBuilder s=new StringBuilder();for(int i=0;i<masks.length;i++){if(i>0)s.append(',');s.append(masks[i]);}prefs.edit().putString(masksKey(hash),s.toString()).apply();}
     void certify(Chapter c,String hash,int[] masks){for(int n:masks)if(n!=Rules.FULL)return;if(masks.length==0||c.size<=0||c.modified<=0)return;prefs.edit().putString("complete:"+c.key(),hash).apply();}
     static String digest(InputStream in)throws Exception {
         MessageDigest md=MessageDigest.getInstance("SHA-256");byte[] b=new byte[65536];int n;while((n=in.read(b))!=-1){if(Thread.currentThread().isInterrupted())throw new InterruptedIOException();md.update(b,0,n);}return hex(md.digest());

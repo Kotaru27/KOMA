@@ -27,7 +27,7 @@ public class MainActivity extends Activity {
     LinearLayoutManager layout; PageAdapter pageAdapter;
     RowAdapter libraryAdapter, historyAdapter;
     boolean controls=false,loading=false,scanning=false,restoring=false,dead=false,pickerOpen=false,scrubbing=false;
-    int generation=0, scanGeneration=0, lastLoaded=-1;
+    int generation=0, scanGeneration=0, lastLoaded=-1, failedNext=-1;
     long lastCheckpoint=0,ignoreCoverageUntil=0;
     Future<?> indexJob, scanJob;
     static final int PICK=47;
@@ -131,7 +131,7 @@ public class MainActivity extends Activity {
         if(libraryAdapter==null)return;String q=search.getText().toString().toLowerCase(Locale.ROOT);List<Row> rows=new ArrayList<>();
         if(browsing!=null){Library.Manga m=browsing;libraryTitle.setText(m.name);rows.add(new Row("‹ All manga","","",()->{browsing=null;search.setText("");renderLibrary();}));
             for(int i=0;i<m.chapters.size();i++){int index=i;Library.Chapter c=m.chapters.get(i);if(c.name.toLowerCase(Locale.ROOT).contains(q))rows.add(new Row(c.name,"Chapter "+(i+1),"Read",()->open(m,index,0,0,true)));}
-        }else{libraryTitle.setText("Library");for(Library.Manga m:mangas)if(m.name.toLowerCase(Locale.ROOT).contains(q)){Library.Position p=library.position(m);rows.add(new Row(m.name,m.chapters.size()+" chapters"+(p==null?"":" · "+p.name),"›",()->{browsing=m;search.setText("");renderLibrary();}));}}
+        }else{libraryTitle.setText("Library");for(Library.Manga m:mangas)if(m.name.toLowerCase(Locale.ROOT).contains(q)||m.chapters.stream().anyMatch(c->c.name.toLowerCase(Locale.ROOT).contains(q))){Library.Position p=library.position(m);rows.add(new Row(m.name,m.chapters.size()+" chapters"+(p==null?"":" · "+p.name),"›",()->{browsing=m;search.setText("");renderLibrary();}));}}
         libraryAdapter.set(rows);if(!scanning)libraryMessage.setText(library.root().isEmpty()?"Choose a folder to begin":mangas.size()+" manga");
     }
     void renderHistory(){
@@ -162,7 +162,7 @@ public class MainActivity extends Activity {
     void restoreActive(){Library.Manga m=find(library.prefs.getString("active",""));if(m!=null)resume(m,false);else if(pages.isEmpty()&&!loading)status.setText("KOMA\n\nSwipe left for library");}
     void resume(Library.Manga m,boolean navigate){Library.Position p=library.position(m);if(p!=null)for(int i=0;i<m.chapters.size();i++)if(m.chapters.get(i).uri.equals(p.chapter)){open(m,i,p.page,p.offset,navigate);return;}open(m,0,0,0,navigate);}
     void clearReader(){
-        generation++;if(indexJob!=null)indexJob.cancel(true);loading=false;restoring=false;selected=null;lastLoaded=-1;reading.stopScroll();int old=pages.size();pages.clear();coverage.clear();pageAdapter.notifyItemRangeRemoved(0,old);status.setVisibility(View.VISIBLE);status.setText("KOMA\n\nChoose a manga");controls=false;top.setVisibility(View.GONE);bottom.setVisibility(View.GONE);
+        generation++;if(indexJob!=null)indexJob.cancel(true);loading=false;restoring=false;selected=null;lastLoaded=-1;failedNext=-1;reading.stopScroll();int old=pages.size();pages.clear();coverage.clear();pageAdapter.notifyItemRangeRemoved(0,old);status.setVisibility(View.VISIBLE);status.setText("KOMA\n\nChoose a manga");controls=false;top.setVisibility(View.GONE);bottom.setVisibility(View.GONE);
     }
     void open(Library.Manga m,int chapter,int page,int offset,boolean navigate){
         checkpoint(true);clearReader();selected=m;lastLoaded=chapter-1;loading=true;restoring=true;status.setText("Opening "+m.chapters.get(chapter).name+"…");if(navigate)pager.setCurrentItem(1,true);
@@ -175,12 +175,12 @@ public class MainActivity extends Activity {
                 main.post(()->{if(dead||token!=generation)return;int start=pages.size();pages.addAll(result);coverage.put(result.get(0).chapter.uri+"|"+result.get(0).hash,masks);lastLoaded=chapter;loading=false;pageAdapter.notifyItemRangeInserted(start,result.size());status.setVisibility(View.GONE);
                     if(first){layout.scrollToPositionWithOffset(start+Math.min(Math.max(page,0),result.size()-1),offset);reading.post(()->{if(token==generation){restoring=false;ignoreCoverageUntil=SystemClock.uptimeMillis()+500;updateControls();preload();checkpoint(true);}});}else updateControls();
                 });
-            }catch(Exception e){main.post(()->{if(dead||token!=generation)return;loading=false;restoring=false;if(first){status.setVisibility(View.VISIBLE);status.setText("Cannot open chapter\n\nTap to return to library");}else toast("Next chapter unavailable. Use Next to retry.");});}
+            }catch(Exception e){main.post(()->{if(dead||token!=generation)return;loading=false;restoring=false;if(first){status.setVisibility(View.VISIBLE);status.setText("Cannot open chapter\n\nTap to return to library");}else {failedNext=chapter;toast("Next chapter unavailable. Use Next to retry.");}});}
         });
     }
     Archives.Page current(){int p=layout.findFirstVisibleItemPosition();return p>=0&&p<pages.size()?pages.get(p):null;}
     int chapterIndex(Archives.Page p){if(p!=null&&selected!=null)for(int i=0;i<selected.chapters.size();i++)if(selected.chapters.get(i).uri.equals(p.chapter.uri))return i;return -1;}
-    void preload(){if(loading||selected==null||pages.isEmpty()||lastLoaded>=selected.chapters.size()-1)return;int end=layout.findLastVisibleItemPosition();if(end>=pages.size()-9)load(lastLoaded+1,false,0,0);}
+    void preload(){if(loading||selected==null||pages.isEmpty()||failedNext==lastLoaded+1||lastLoaded>=selected.chapters.size()-1)return;int end=layout.findLastVisibleItemPosition();if(end>=pages.size()-9)load(lastLoaded+1,false,0,0);}
     void chapterDelta(int delta){
         Archives.Page p=current();int i=chapterIndex(p);if(i<0)return;int target=i+delta;if(target<0||target>=selected.chapters.size()){toast("No "+(delta<0?"previous":"next")+" chapter");return;}
         Library.Chapter c=selected.chapters.get(target);for(int j=0;j<pages.size();j++)if(pages.get(j).chapter.uri.equals(c.uri)){jumpAbsolute(j);return;}open(selected,target,0,0,true);
