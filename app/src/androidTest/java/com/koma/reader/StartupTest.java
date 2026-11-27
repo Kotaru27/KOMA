@@ -11,7 +11,7 @@ import java.util.zip.*;
 import android.graphics.Bitmap;
 @RunWith(AndroidJUnit4.class)
 public class StartupTest {
- @Test public void activityStarts(){try(ActivityScenario<MainActivity> s=ActivityScenario.launch(MainActivity.class)){s.onActivity(a->{assertNotNull(a.findViewById(android.R.id.content));assertEquals(1,a.pager.getCurrentItem());assertNotNull(a.search);assertNotNull(a.libraryGrid);});}}
+ @Test public void activityStarts(){try(ActivityScenario<MainActivity> s=ActivityScenario.launch(MainActivity.class)){s.onActivity(a->{assertNotNull(a.findViewById(android.R.id.content));assertEquals(1,a.pager.getCurrentItem());assertNotNull(a.search);assertNotNull(a.libraryLayout);assertTrue(a.libraryRows.getLayoutManager() instanceof androidx.recyclerview.widget.LinearLayoutManager);assertNotNull(a.stateButton);assertNotNull(a.chapterHeading);});}}
  @Test public void archiveIndexAndDecode() throws Exception {
    android.content.Context c=InstrumentationRegistry.getInstrumentation().getTargetContext();
    File f=new File(c.getCacheDir(),"fixture.cbz");Bitmap b=Bitmap.createBitmap(32,48,Bitmap.Config.ARGB_8888);

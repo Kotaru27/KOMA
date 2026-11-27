@@ -2,7 +2,13 @@
 
 Clean-room Android implementation: Java 17, AndroidX RecyclerView and ViewPager2, Storage Access Framework, no network permission, accounts, advertisements or analytics.
 
-## 1.1 Interface refresh
+## 1.2 Reference APK layout
+- Compact text-first library and history rows; no cover decoding during library navigation. Search, all three sorting modes and chapter ordering retained.
+- Centered reader empty state with explicit Open library / Select Folder actions, compact outlined buttons, dark surfaces and separate chapter and page navigation.
+- System sans-serif and monospace fonts approximate the supplied visual reference without importing its binaries or changing the reader architecture.
+- The reference layout is recreated in Android Views; this is not a pixel-identical Compose port.
+
+## 1.1 Interface refresh (superseded visually)
 - Responsive local manga cover grid, searchable manga and chapters, A–Z/recently read/recently added sorting (first indexed date), chapter list and cover-based history.
 - Reader is the initial screen even after selecting a folder; tap controls fade in/out. Cover generation uses a separate cancellable worker and bounded local caches, with a placeholder for unsupported or oversized archives.
 - Reading controls update only when visible and changed; redundant position saves are skipped. Physical-device refresh-rate and frame pacing validation remain required.
