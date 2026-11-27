@@ -1,0 +1,42 @@
+plugins { id 'com.android.application' }
+android {
+    namespace 'com.koma.reader'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'com.koma.reader'
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName '1.0'
+        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+    }
+    signingConfigs {
+        if (System.getenv('KOMA_KEYSTORE')) {
+            production {
+                storeFile file(System.getenv('KOMA_KEYSTORE'))
+                storePassword System.getenv('KOMA_STORE_PASSWORD')
+                keyAlias System.getenv('KOMA_KEY_ALIAS')
+                keyPassword System.getenv('KOMA_KEY_PASSWORD')
+            }
+        }
+    }
+    buildTypes {
+        debug {
+            applicationIdSuffix ".test.r" + (System.getenv('GITHUB_RUN_ID') ?: 'local') + "a" + (System.getenv('GITHUB_RUN_ATTEMPT') ?: '1')
+        }
+        release {
+            if (System.getenv('KOMA_KEYSTORE')) signingConfig signingConfigs.production
+            minifyEnabled false
+        }
+    }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+}
+dependencies {
+    implementation 'androidx.recyclerview:recyclerview:1.4.0'
+    implementation 'androidx.viewpager2:viewpager2:1.1.0'
+    implementation 'androidx.documentfile:documentfile:1.0.1'
+    testImplementation 'junit:junit:4.13.2'
+    androidTestImplementation 'androidx.test:runner:1.6.2'
+    androidTestImplementation 'androidx.test.ext:junit:1.2.1'
+    androidTestImplementation 'androidx.test:core:1.6.1'
+}
