@@ -69,7 +69,7 @@ public class MainActivity extends Activity {
     LinearLayout screen(){LinearLayout l=new LinearLayout(this);l.setOrientation(LinearLayout.VERTICAL);l.setBackgroundColor(Color.BLACK);l.setPadding(dp(18),dp(12),dp(18),dp(12));
         l.setOnApplyWindowInsetsListener((v,in)->{if(Build.VERSION.SDK_INT>=30){android.graphics.Insets s=in.getInsets(WindowInsets.Type.systemBars());v.setPadding(dp(18)+s.left,dp(12)+s.top,dp(18)+s.right,dp(12)+s.bottom);}else v.setPadding(dp(18),dp(12)+in.getSystemWindowInsetTop(),dp(18),dp(12)+in.getSystemWindowInsetBottom());return in;});return l;}
     TextView text(String s,int size,int color){TextView t=new TextView(this);t.setText(s);t.setTextColor(color);t.setTextSize(size);t.setGravity(Gravity.CENTER_VERTICAL);return t;}
-    TextView title(String s){TextView t=text(s,30,Color.WHITE);t.setTypeface(android.graphics.Typeface.create("sans-serif-medium",0));t.setPadding(0,dp(16),0,dp(12));return t;}
+    TextView title(String s){TextView t=text(s,30,Color.WHITE);t.setTypeface(android.graphics.Typeface.create("sans-serif-medium",android.graphics.Typeface.NORMAL));t.setPadding(0,dp(16),0,dp(12));return t;}
     TextView action(String label,Runnable callback){TextView t=text(label,14,Color.WHITE);t.setGravity(Gravity.CENTER);t.setPadding(dp(12),dp(10),dp(12),dp(10));t.setMinHeight(dp(48));t.setClickable(true);t.setFocusable(true);t.setOnClickListener(v->callback.run());android.util.TypedValue a=new android.util.TypedValue();getTheme().resolveAttribute(android.R.attr.selectableItemBackground,a,true);t.setBackgroundResource(a.resourceId);return t;}
     LinearLayout horizontal(){LinearLayout l=new LinearLayout(this);l.setGravity(Gravity.CENTER_VERTICAL);return l;}
     void line(LinearLayout l){View v=new View(this);v.setBackgroundColor(0xff292929);l.addView(v,new LinearLayout.LayoutParams(-1,dp(1)));}
@@ -147,7 +147,9 @@ public class MainActivity extends Activity {
     @Override protected void onActivityResult(int request,int result,Intent data){
         super.onActivityResult(request,result,data);if(request!=PICK)return;pickerOpen=false;if(result!=RESULT_OK||data==null||data.getData()==null)return;
         Uri uri=data.getData();int flags=data.getFlags()&(Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-        try{getContentResolver().takePersistableUriPermission(uri,flags);if(!library.permission(uri.toString(),false))throw new SecurityException();
+        try{if((flags & Intent.FLAG_GRANT_READ_URI_PERMISSION)==0)throw new SecurityException("Read permission not granted");
+            if((flags & Intent.FLAG_GRANT_WRITE_URI_PERMISSION)!=0)getContentResolver().takePersistableUriPermission(uri,Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+            else getContentResolver().takePersistableUriPermission(uri,Intent.FLAG_GRANT_READ_URI_PERMISSION);if(!library.permission(uri.toString(),false))throw new SecurityException();
             checkpoint(true);clearReader();library.prefs.edit().putString("root",uri.toString()).remove("active").apply();mangas=library.cached(uri.toString());browsing=null;renderLibrary();renderHistory();refresh();pager.setCurrentItem(2,true);
         }catch(Exception e){toast("Could not keep folder access. Choose another folder.");}
     }
