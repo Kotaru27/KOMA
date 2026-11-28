@@ -15,16 +15,20 @@ import java.util.concurrent.*;
 
 public class MainActivity extends Activity {
     final Handler main=new Handler(Looper.getMainLooper());
-    final ExecutorService scanner=Executors.newSingleThreadExecutor(), indexer=Executors.newSingleThreadExecutor();
+    final ExecutorService scanner=Executors.newSingleThreadExecutor(), indexer=Executors.newSingleThreadExecutor(), cleanupWorker=Executors.newSingleThreadExecutor();
+    final Set<String> cleaning=new HashSet<>();
     final ThreadPoolExecutor decoder=(ThreadPoolExecutor)Executors.newFixedThreadPool(2);
     Library library; Archives archives;
-    LinearLayoutManager libraryLayout; TextView sortButton, backButton; int sortMode=0;
+    LinearLayoutManager libraryLayout; TextView sortButton, backButton; int sortMode=0, chapterSort=0;
     String lastSavedKey=""; int lastSavedOffset=Integer.MIN_VALUE; String lastControlKey=""; int lastControlPage=-1;
-    final String[] sortNames={"A–Z", "Recently read", "Recently added"};
+    final String[] sortNames={"A–Z", "Recently read", "Recently added", "Z–A", "Oldest added", "Most chapters", "Fewest chapters"};
+    final String[] chapterSortNames={"Chapter ↑", "Chapter ↓"};
     List<Library.Manga> mangas=new ArrayList<>();
     Library.Manga selected, browsing;
     final List<Archives.Page> pages=new ArrayList<>();
     final Map<String,int[]> coverage=new HashMap<>();
+    final Map<String,Seen> observed=new HashMap<>();
+    static class Seen {final int mask;final long time;Seen(int m,long t){mask=m;time=t;}}
     ViewPager2 pager; FrameLayout reader; LinearLayout history,manager,top,bottom;
     TextView status, stateDetail, stateButton,heading,chapterHeading,counter,libraryTitle,libraryMessage; LinearLayout readerState; TextView clearSearch;
     EditText search; SeekBar scrubber; RecyclerView libraryRows,historyRows; AxisList reading;
@@ -36,9 +40,9 @@ public class MainActivity extends Activity {
     Future<?> indexJob, scanJob;
     static final int PICK=47;
     int dp(float n){return Math.round(n*getResources().getDisplayMetrics().density);}
-    final Runnable heartbeat=new Runnable(){public void run(){if(dead)return;if(pager!=null&&pager.getCurrentItem()==1&&hasWindowFocus()&&!scrubbing&&!restoring){observe();checkpoint(false);}main.postDelayed(this,350);}};
+    final Runnable heartbeat=new Runnable(){public void run(){if(dead)return;observe();if(pager!=null&&pager.getCurrentItem()==1&&hasWindowFocus()&&!scrubbing&&!restoring)checkpoint(false);main.postDelayed(this,350);}};
     @Override public void onCreate(Bundle state){
-        super.onCreate(state);library=new Library(this);archives=new Archives(this);sortMode=Math.max(0,Math.min(2,library.prefs.getInt("library-sort",0)));
+        super.onCreate(state);library=new Library(this);archives=new Archives(this);sortMode=Math.max(0,Math.min(sortNames.length-1,library.prefs.getInt("library-sort",0)));chapterSort=Math.max(0,Math.min(1,library.prefs.getInt("chapter-sort",0)));
         getWindow().setBackgroundDrawableResource(android.R.color.black);
         getWindow().setFlags(WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED);
         requestRefreshRate();
@@ -53,7 +57,7 @@ public class MainActivity extends Activity {
             @Override public void onBindViewHolder(ScreenHolder h,int p){View v=screens[p];if(v.getParent()!=null)((ViewGroup)v.getParent()).removeView(v);h.frame.removeAllViews();h.frame.addView(v,new FrameLayout.LayoutParams(-1,-1));}
         });
         setContentView(pager);pager.setCurrentItem(1,false);
-        pager.registerOnPageChangeCallback(new ViewPager2.OnPageChangeCallback(){@Override public void onPageSelected(int p){if(p!=1){checkpoint(true);if(p==0)renderHistory();if(p==2&&sortMode==1)renderLibrary();}else {hideKeyboard();}bars(p==1);}});
+        pager.registerOnPageChangeCallback(new ViewPager2.OnPageChangeCallback(){@Override public void onPageSelected(int p){if(p!=1){checkpoint(true);finishSelectedIfEligible();if(p==0)renderHistory();if(p==2)renderLibrary();}else {hideKeyboard();}bars(p==1);}});
         bars(true);main.post(heartbeat);
         String root=library.root();
         if(root.isEmpty()||!library.permission(root,false)){showReaderState("KOMA","Choose your manga folder","Select Folder");main.postDelayed(()->{if(!dead)pickFolder();},350);}
@@ -112,8 +116,8 @@ public class MainActivity extends Activity {
             public void onStopTrackingTouch(SeekBar s){scrubbing=false;pager.setUserInputEnabled(true);jumpPage(s.getProgress());}
         });
         reading.addOnScrollListener(new RecyclerView.OnScrollListener(){
-            @Override public void onScrolled(RecyclerView r,int dx,int dy){updateControls();preload();if(!restoring&&!scrubbing&&r.getScrollState()==RecyclerView.SCROLL_STATE_DRAGGING)observe();checkpoint(false);}
-            @Override public void onScrollStateChanged(RecyclerView r,int state){if(state==RecyclerView.SCROLL_STATE_IDLE){observe();checkpoint(true);}}
+            @Override public void onScrolled(RecyclerView r,int dx,int dy){updateControls();preload();checkpoint(false);}
+            @Override public void onScrollStateChanged(RecyclerView r,int state){if(state==RecyclerView.SCROLL_STATE_IDLE){checkpoint(true);}else if(state==RecyclerView.SCROLL_STATE_SETTLING)observed.clear();}
         });
     }
     void toggleControls(){if(pages.isEmpty())return;controls=!controls;animateControls(top,controls);animateControls(bottom,controls);if(controls)updateControls();}
@@ -132,12 +136,12 @@ public class MainActivity extends Activity {
         searchBox.addView(search,new LinearLayout.LayoutParams(0,dp(46),1));clearSearch=iconAction("×","Clear search",()->search.setText(""));clearSearch.setVisibility(View.INVISIBLE);searchBox.addView(clearSearch,new LinearLayout.LayoutParams(dp(44),dp(46)));manager.addView(searchBox,new LinearLayout.LayoutParams(-1,dp(46)));
         search.setOnEditorActionListener((v,a,e)->{hideKeyboard();return true;});
         search.addTextChangedListener(new TextWatcher(){public void beforeTextChanged(CharSequence s,int a,int c,int f){}public void onTextChanged(CharSequence s,int a,int b,int c){clearSearch.setVisibility(s.length()==0?View.INVISIBLE:View.VISIBLE);renderLibrary();}public void afterTextChanged(Editable e){}});
-        LinearLayout meta=horizontal();libraryMessage=text("",12,0xff999999);flex(meta,libraryMessage);sortButton=action(sortNames[sortMode]+"  ▾",this::showSort);sortButton.setTextSize(12);meta.addView(sortButton);manager.addView(meta);
+        LinearLayout meta=horizontal();libraryMessage=text("",12,0xff999999);flex(meta,libraryMessage);sortButton=outlined("Sort: "+sortNames[sortMode]+"  ▾",this::showSort);sortButton.setContentDescription("Sort options");sortButton.setTextSize(12);meta.addView(sortButton);manager.addView(meta);
         libraryRows=new AxisList(this);libraryRows.setOverScrollMode(View.OVER_SCROLL_NEVER);libraryLayout=new LinearLayoutManager(this);libraryRows.setLayoutManager(libraryLayout);libraryRows.setItemAnimator(null);libraryRows.setClipToPadding(false);libraryAdapter=new RowAdapter();libraryRows.setAdapter(libraryAdapter);
         manager.addView(libraryRows,new LinearLayout.LayoutParams(-1,0,1));manager.setFocusableInTouchMode(true);manager.requestFocus();
     }
     void showSort(){
-        PopupMenu menu=new PopupMenu(this,sortButton);for(int i=0;i<sortNames.length;i++)menu.getMenu().add(0,i,i,sortNames[i]);menu.setOnMenuItemClickListener(item->{sortMode=item.getItemId();library.prefs.edit().putInt("library-sort",sortMode).apply();renderLibrary();return true;});menu.show();
+        boolean chapters=browsing!=null;String[] options=chapters?chapterSortNames:sortNames;PopupMenu menu=new PopupMenu(this,sortButton);for(int i=0;i<options.length;i++)menu.getMenu().add(0,i,i,options[i]);menu.getMenu().setGroupCheckable(0,true,true);menu.getMenu().getItem(chapters?chapterSort:sortMode).setChecked(true);menu.setOnMenuItemClickListener(item->{int mode=item.getItemId();if(chapters){chapterSort=mode;library.prefs.edit().putInt("chapter-sort",mode).apply();}else{sortMode=mode;library.prefs.edit().putInt("library-sort",mode).apply();}renderLibrary();libraryRows.scrollToPosition(0);return true;});menu.show();
     }
     static class Row{
         final String name,detail,button;final Runnable run;
@@ -166,17 +170,17 @@ public class MainActivity extends Activity {
     }
     void renderLibrary(){
         if(libraryAdapter==null)return;String q=search.getText().toString().trim().toLowerCase(Locale.ROOT);List<Row> rows=new ArrayList<>();
-        if(browsing!=null){Library.Manga m=browsing;libraryTitle.setText(m.name);search.setHint("Search chapters");sortButton.setVisibility(View.GONE);Library.Position position=library.position(m);
+        if(browsing!=null){Library.Manga m=browsing;libraryTitle.setText(m.name);search.setHint("Search chapters");sortButton.setVisibility(View.VISIBLE);sortButton.setText("Sort: "+chapterSortNames[chapterSort]+"  ▾");Library.Position position=library.position(m);
             if(position!=null&&q.isEmpty())rows.add(new Row("Continue reading",position.name+" · Page "+(position.page+1),"Resume",()->{hideKeyboard();resume(m,true);}));
-            int count=0;for(int i=0;i<m.chapters.size();i++){int index=i;Library.Chapter c=m.chapters.get(i);if(c.name.toLowerCase(Locale.ROOT).contains(q)){count++;rows.add(new Row(c.name.replaceFirst("(?i)\\.cbz$",""),"Chapter "+(i+1),"›",()->{hideKeyboard();open(m,index,0,0,true);}));}}
+            int count=0;for(int row=0;row<m.chapters.size();row++){int i=chapterSort==0?row:m.chapters.size()-1-row;int index=i;Library.Chapter c=m.chapters.get(i);if(c.name.toLowerCase(Locale.ROOT).contains(q)){count++;rows.add(new Row(c.name.replaceFirst("(?i)\\.cbz$",""),"Chapter "+(i+1)+(library.completed(c)?" · Completed":""),"›",()->{hideKeyboard();open(m,index,0,0,true);}));}}
             libraryMessage.setText(count+" chapters");
         }else{
-            libraryTitle.setText("Library");search.setHint("Search manga");sortButton.setVisibility(View.VISIBLE);sortButton.setText(sortNames[sortMode]+"  ▾");
-            List<Library.Manga> sorted=new ArrayList<>(mangas);Map<String,Long> times=new HashMap<>();
-            if(sortMode!=0)for(Library.Manga m:sorted){Library.Position p=library.position(m);times.put(m.uri,sortMode==1?(p==null?0L:p.time):library.added(m));}
-            sorted.sort((a,b)->{int n=sortMode==0?0:Long.compare(times.get(b.uri),times.get(a.uri));return n!=0?n:Rules.natural(a.name,b.name);});
+            libraryTitle.setText("Library");search.setHint("Search manga");sortButton.setVisibility(View.VISIBLE);sortButton.setText("Sort: "+sortNames[sortMode]+"  ▾");
+            List<Library.Manga> sorted=new ArrayList<>(mangas);Map<String,Long> reads=new HashMap<>(), added=new HashMap<>();
+            for(Library.Manga m:sorted){Library.Position p=library.position(m);reads.put(m.uri,p==null?0L:p.time);added.put(m.uri,library.added(m));}
+            sorted.sort((a,b)->Rules.mangaOrder(sortMode,a.name,b.name,reads.get(a.uri),reads.get(b.uri),added.get(a.uri),added.get(b.uri),a.chapters.size(),b.chapters.size()));
             for(Library.Manga m:sorted)if(m.name.toLowerCase(Locale.ROOT).contains(q)||m.chapters.stream().anyMatch(c->c.name.toLowerCase(Locale.ROOT).contains(q))){
-                rows.add(new Row(m.name,m.chapters.size()+" chapters","›",()->{hideKeyboard();browsing=m;search.setText("");renderLibrary();libraryRows.scrollToPosition(0);}));
+                rows.add(new Row(m.name,m.chapters.size()+" chapters"+(cleaning.contains(m.uri)?" · Checking":library.allCertified(m)?" · Completed":""),"›",()->{hideKeyboard();browsing=m;search.setText("");renderLibrary();libraryRows.scrollToPosition(0);}));
             }
             if(!scanning)libraryMessage.setText(library.root().isEmpty()?"Choose a folder to begin":rows.size()+" manga");
         }
@@ -188,7 +192,7 @@ public class MainActivity extends Activity {
         if(rows.isEmpty())rows.add(new Row("No reading history","Open a manga from your library","Library",()->pager.setCurrentItem(2,true)));historyAdapter.set(rows);
     }
     void pickFolder(){
-        if(pickerOpen)return;checkpoint(true);pickerOpen=true;
+        if(pickerOpen)return;if(!cleaning.isEmpty()){toast("Checking completed manga…");return;}checkpoint(true);pickerOpen=true;
         Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_WRITE_URI_PERMISSION|Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION|Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
         try{startActivityForResult(i,PICK);}catch(ActivityNotFoundException e){pickerOpen=false;toast("Folder picker unavailable");}
     }
@@ -211,11 +215,18 @@ public class MainActivity extends Activity {
     Library.Manga find(String id){for(Library.Manga m:mangas)if(m.uri.equals(id))return m;return null;}
     void restoreActive(){Library.Manga m=find(library.prefs.getString("active",""));if(m!=null)resume(m,false);else if(pages.isEmpty()&&!loading)readyState();}
     void resume(Library.Manga m,boolean navigate){Library.Position p=library.position(m);if(p!=null)for(int i=0;i<m.chapters.size();i++)if(m.chapters.get(i).uri.equals(p.chapter)){open(m,i,p.page,p.offset,navigate);return;}open(m,0,0,0,navigate);}
+    void finishSelectedIfEligible(){
+        Library.Manga m=selected;String root=library.root();if(m==null||!library.allCertified(m)||!library.permission(root,true)||cleaning.contains(m.uri))return;
+        // Leave the current reader before mutating the storage. Block reopening the same manga while verification runs.
+        cleaning.add(m.uri);clearReader();cleanupWorker.submit(()->{boolean removed=false;try{removed=library.removeCompletedManga(root,m);}catch(Exception ignored){}boolean deleted=removed;
+            main.post(()->{if(dead)return;cleaning.remove(m.uri);if(deleted){if(browsing!=null&&browsing.uri.equals(m.uri))browsing=null;mangas.removeIf(x->x.uri.equals(m.uri));if(root.equals(library.root()))refresh();toast("Completed manga removed");}renderLibrary();renderHistory();});
+        });
+    }
     void clearReader(){
-        generation++;if(indexJob!=null)indexJob.cancel(true);loading=false;restoring=false;selected=null;lastLoaded=-1;failedNext=-1;reading.stopScroll();int old=pages.size();pages.clear();coverage.clear();pageAdapter.notifyItemRangeRemoved(0,old);readyState();controls=false;top.animate().cancel();bottom.animate().cancel();top.setAlpha(1f);bottom.setAlpha(1f);top.setVisibility(View.GONE);bottom.setVisibility(View.GONE);lastControlKey="";lastControlPage=-1;lastSavedKey="";lastSavedOffset=Integer.MIN_VALUE;
+        generation++;if(indexJob!=null)indexJob.cancel(true);loading=false;restoring=false;selected=null;lastLoaded=-1;failedNext=-1;reading.stopScroll();int old=pages.size();pages.clear();coverage.clear();observed.clear();pageAdapter.notifyItemRangeRemoved(0,old);readyState();controls=false;top.animate().cancel();bottom.animate().cancel();top.setAlpha(1f);bottom.setAlpha(1f);top.setVisibility(View.GONE);bottom.setVisibility(View.GONE);lastControlKey="";lastControlPage=-1;lastSavedKey="";lastSavedOffset=Integer.MIN_VALUE;
     }
     void open(Library.Manga m,int chapter,int page,int offset,boolean navigate){
-        checkpoint(true);clearReader();selected=m;lastLoaded=chapter-1;loading=true;restoring=true;showReaderState("Opening chapter",m.chapters.get(chapter).name,"");if(navigate)pager.setCurrentItem(1,true);
+        if(cleaning.contains(m.uri)){toast("Checking completed manga…");return;}checkpoint(true);if(selected!=null&&!selected.uri.equals(m.uri))finishSelectedIfEligible();clearReader();selected=m;lastLoaded=chapter-1;loading=true;restoring=true;showReaderState("Opening chapter",m.chapters.get(chapter).name,"");if(navigate)pager.setCurrentItem(1,true);
         load(chapter,true,page,offset);
     }
     void load(int chapter,boolean first,int page,int offset){
@@ -237,7 +248,7 @@ public class MainActivity extends Activity {
     }
     void pageDelta(int delta){Archives.Page p=current();if(p!=null&&p.index+delta>=0&&p.index+delta<p.total)jumpPage(p.index+delta);}
     void jumpPage(int page){Archives.Page p=current();if(p==null)return;int first=layout.findFirstVisibleItemPosition()-p.index;jumpAbsolute(first+Math.min(Math.max(page,0),p.total-1));}
-    void jumpAbsolute(int pos){ignoreCoverageUntil=SystemClock.uptimeMillis()+650;reading.stopScroll();layout.scrollToPositionWithOffset(pos,0);reading.post(()->{updateControls();checkpoint(true);});}
+    void jumpAbsolute(int pos){observed.clear();ignoreCoverageUntil=SystemClock.uptimeMillis()+650;reading.stopScroll();layout.scrollToPositionWithOffset(pos,0);reading.post(()->{updateControls();checkpoint(true);});}
     void pageDialog(){Archives.Page p=current();if(p==null)return;EditText number=new EditText(this);number.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);number.setText(String.valueOf(p.index+1));number.selectAll();new AlertDialog.Builder(this).setTitle("Go to page · "+p.total).setView(number).setNegativeButton("Cancel",null).setPositiveButton("Go",(d,w)->{try{int i=Integer.parseInt(number.getText().toString());if(i<1||i>p.total)throw new NumberFormatException();jumpPage(i-1);}catch(NumberFormatException e){toast("Enter a page from 1 to "+p.total);}}).show();}
     void updateControls(){if(!controls||scrubbing)return;Archives.Page p=current();if(p==null)return;if(!p.chapter.uri.equals(lastControlKey)){heading.setText(selected.name);chapterHeading.setText(p.chapter.name.replaceFirst("(?i)\\.cbz$",""));scrubber.setMax(p.total-1);lastControlKey=p.chapter.uri;lastControlPage=-1;}if(p.index!=lastControlPage){counter.setText((p.index+1)+" / "+p.total);scrubber.setProgress(p.index);lastControlPage=p.index;}}
     void checkpoint(boolean force){
@@ -245,10 +256,20 @@ public class MainActivity extends Activity {
         Archives.Page p=current();if(p==null)return;View v=layout.findViewByPosition(layout.findFirstVisibleItemPosition());if(v==null)return;int offset=v.getTop()-reading.getPaddingTop();String key=selected.uri+"|"+p.chapter.uri+"|"+p.index;if(key.equals(lastSavedKey)&&offset==lastSavedOffset)return;lastCheckpoint=now;lastSavedKey=key;lastSavedOffset=offset;library.save(selected,p.chapter,p.index,offset,p.total);
     }
     void observe(){
-        if(selected==null||restoring||scrubbing||pager==null||pager.getCurrentItem()!=1||!hasWindowFocus()||controls||SystemClock.uptimeMillis()<ignoreCoverageUntil||reading.getScrollState()==RecyclerView.SCROLL_STATE_SETTLING)return;
-        for(int i=0;i<reading.getChildCount();i++){View v=reading.getChildAt(i);RecyclerView.ViewHolder vh=reading.getChildViewHolder(v);if(!(vh instanceof PageHolder))continue;PageHolder h=(PageHolder)vh;Archives.Page p=h.page;if(p==null||!h.decoded||v.getHeight()<=0)continue;
-            int from=Math.max(0,-v.getTop()),to=Math.min(v.getHeight(),reading.getHeight()-v.getTop());if(to<=from)continue;String key=p.chapter.uri+"|"+p.hash;int[] a=coverage.get(key);if(a==null)continue;int n=Rules.coverage(a[p.index],from,to,v.getHeight());if(n!=a[p.index]){a[p.index]=n;library.saveCoverage(key,a);library.certify(p.chapter,p.hash,a);}
+        long now=SystemClock.uptimeMillis();
+        if(selected==null||restoring||scrubbing||pager==null||pager.getCurrentItem()!=1||!hasWindowFocus()||controls||now<ignoreCoverageUntil||reading.getScrollState()==RecyclerView.SCROLL_STATE_SETTLING){observed.clear();return;}
+        Map<String,Seen> next=new HashMap<>();
+        for(int i=0;i<reading.getChildCount();i++){
+            View v=reading.getChildAt(i);RecyclerView.ViewHolder vh=reading.getChildViewHolder(v);if(!(vh instanceof PageHolder))continue;
+            PageHolder h=(PageHolder)vh;Archives.Page p=h.page;if(p==null||!h.decoded||v.getHeight()<=0)continue;
+            int from=Math.max(0,-v.getTop()),to=Math.min(v.getHeight(),reading.getHeight()-v.getTop());if(to<=from)continue;
+            String key=p.chapter.uri+"|"+p.hash;int[] masks=coverage.get(key);if(masks==null)continue;
+            String pageKey=key+"|"+p.index;int visible=Rules.coverage(0,from,to,v.getHeight());Seen prior=observed.get(pageKey);
+            next.put(pageKey,new Seen(visible,now));
+            if(prior==null||now-prior.time<250||now-prior.time>1000)continue;
+            int n=masks[p.index]|(prior.mask&visible);if(n!=masks[p.index]){masks[p.index]=n;library.saveCoverage(key,masks);library.certify(p.chapter,p.hash,masks);}
         }
+        observed.clear();observed.putAll(next);
     }
     class AxisList extends RecyclerView{
         float x,y;boolean decided;
@@ -285,5 +306,5 @@ public class MainActivity extends Activity {
     @Override protected void onPause(){checkpoint(true);super.onPause();}
     @Override protected void onResume(){super.onResume();if(pager!=null&&!library.root().isEmpty()&&!library.permission(library.root(),false)&&selected!=null){clearReader();mangas=new ArrayList<>();renderLibrary();renderHistory();showReaderState("Folder access expired","Choose your manga folder again.","Select Folder");}}
     @Override public void onBackPressed(){if(pager.getCurrentItem()==2&&browsing!=null){browsing=null;search.setText("");renderLibrary();}else if(pager.getCurrentItem()!=1)pager.setCurrentItem(1,true);else if(controls)toggleControls();else super.onBackPressed();}
-    @Override protected void onDestroy(){checkpoint(true);dead=true;main.removeCallbacksAndMessages(null);scanner.shutdownNow();indexer.shutdownNow();decoder.shutdownNow();super.onDestroy();}
+    @Override protected void onDestroy(){checkpoint(true);dead=true;main.removeCallbacksAndMessages(null);scanner.shutdownNow();indexer.shutdownNow();decoder.shutdownNow();cleanupWorker.shutdownNow();super.onDestroy();}
 }

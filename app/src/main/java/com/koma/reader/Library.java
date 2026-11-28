@@ -74,31 +74,62 @@ final class Library {
     }
     Position position(Manga m){try{JSONObject o=new JSONObject(prefs.getString("pos:"+m.uri,"{}"));return new Position(o.getString("chapter"),o.getString("name"),o.getInt("page"),o.getInt("offset"),o.getInt("total"),o.getLong("time"));}catch(JSONException e){return null;}}
     void save(Manga m,Chapter c,int page,int offset,int total){try{prefs.edit().putString("pos:"+m.uri,new JSONObject().put("chapter",c.uri).put("name",c.name).put("page",page).put("offset",offset).put("total",total).put("time",System.currentTimeMillis()).toString()).putString("active",m.uri).apply();}catch(JSONException ignored){}}
-    String masksKey(String hash){return "coverage:"+hash;}
+    String masksKey(String hash){return "coverage-v2:"+hash;}
     int[] coverage(String hash,int count){int[] a=new int[count];String s=prefs.getString(masksKey(hash),"");String[] parts=s.split(",");if(parts.length==count)try{for(int i=0;i<count;i++)a[i]=Integer.parseInt(parts[i]);}catch(NumberFormatException e){Arrays.fill(a,0);}return a;}
     void saveCoverage(String hash,int[] masks){StringBuilder s=new StringBuilder();for(int i=0;i<masks.length;i++){if(i>0)s.append(',');s.append(masks[i]);}prefs.edit().putString(masksKey(hash),s.toString()).apply();}
-    void certify(Chapter c,String hash,int[] masks){for(int n:masks)if(n!=Rules.FULL)return;if(masks.length==0||c.size<=0||c.modified<=0)return;prefs.edit().putString("complete:"+c.key(),hash).apply();}
+    void certify(Chapter c,String hash,int[] masks){for(int n:masks)if(n!=Rules.FULL)return;if(masks.length==0||c.size<=0||c.modified<=0)return;String key="complete-v2:"+c.key();if(!hash.equals(prefs.getString(key,"")))prefs.edit().putString(key,hash).apply();}
+    boolean completed(Chapter c){return c.size>0&&c.modified>0&&!prefs.getString("complete-v2:"+c.key(),"").isEmpty();}
+    boolean allCertified(Manga m){if(m.chapters.isEmpty())return false;for(Chapter c:m.chapters)if(!completed(c))return false;return true;}
     static String digest(InputStream in)throws Exception {
         MessageDigest md=MessageDigest.getInstance("SHA-256");byte[] b=new byte[65536];int n;while((n=in.read(b))!=-1){if(Thread.currentThread().isInterrupted())throw new InterruptedIOException();md.update(b,0,n);}return hex(md.digest());
     }
     static String hex(byte[] bytes){StringBuilder s=new StringBuilder();for(byte b:bytes)s.append(String.format(Locale.ROOT,"%02x",b&255));return s.toString();}
-    // Eligibility is intentionally side-effect free. Android SAF has no atomic
-    // compare-and-delete operation. Until a storage-specific safety contract is
-    // verified, leave candidate folders intact rather than risk unrelated data.
-    boolean deletionCandidate(String root,Manga manga)throws Exception {
-        if(!permission(root,true))return false;
+    // Only the local primary external-storage provider is eligible. No generic
+    // provider, root, nested child directory, unknown file or partial listing.
+    private boolean folderIdentity(Uri tree,Uri folder,String id)throws IOException {
+        String[] fields={Document.COLUMN_DOCUMENT_ID,Document.COLUMN_MIME_TYPE,Document.COLUMN_FLAGS};
+        try(Cursor c=context.getContentResolver().query(folder,fields,null,null,null)){
+            if(c==null||c.getExtras().getBoolean(DocumentsContract.EXTRA_LOADING,false)||!c.moveToFirst())return false;
+            boolean ok=id.equals(c.getString(0))&&Document.MIME_TYPE_DIR.equals(c.getString(1))
+                &&!c.isNull(2)&&(c.getLong(2)&Document.FLAG_SUPPORTS_DELETE)!=0;
+            return ok&&!c.moveToNext();
+        }
+    }
+    private Set<String> snapshot(List<Node> nodes,String id) {
+        Set<String> result=new HashSet<>();
+        for(Node n:nodes){
+            if(!n.chapter()||n.size<=0||n.modified<=0||n.name.contains("/")||n.name.contains("\\")||!n.id.equals(id+"/"+n.name))return Collections.emptySet();
+            if(!result.add(n.asChapter().key()))return Collections.emptySet();
+        }
+        return result;
+    }
+    // One folder-level delete, never individual files. SAF cannot provide an
+    // atomic compare-and-delete; a concurrent external edit is a residual risk.
+    boolean removeCompletedManga(String root,Manga manga)throws Exception {
+        if(!root.equals(root())||!permission(root,true)||!allCertified(manga))return false;
         Uri tree=Uri.parse(root), folder=Uri.parse(manga.uri);
         if(!"com.android.externalstorage.documents".equals(tree.getAuthority())||!tree.getAuthority().equals(folder.getAuthority()))return false;
         String base=DocumentsContract.getTreeDocumentId(tree), id=DocumentsContract.getDocumentId(folder);
-        if(base.equals(id)||!id.startsWith(base.endsWith(":")||base.endsWith("/")?base:base+"/"))return false;
-        List<Node> nodes=children(tree,id);Set<String> current=new HashSet<>(),completed=new HashSet<>();
+        if(!base.equals(DocumentsContract.getTreeDocumentId(folder))||!Rules.strictDescendant(base,id)||!folderIdentity(tree,folder,id))return false;
+        Set<String> expected=new HashSet<>();for(Chapter c:manga.chapters)if(!expected.add(c.key()))return false;
+        List<Node> nodes=children(tree,id);Set<String> verified=snapshot(nodes,id);
+        if(!Rules.stableSnapshot(expected,verified,verified))return false;
+        Set<String> completed=new HashSet<>();
         for(Node n:nodes){
-            if(!n.chapter()||n.size<=0||n.modified<=0)return false;
-            Chapter c=n.asChapter();current.add(c.key());String expected=prefs.getString("complete:"+c.key(),"");
-            if(expected.isEmpty())return false;
-            try(InputStream in=context.getContentResolver().openInputStream(Uri.parse(c.uri))){if(in==null||!expected.equals(digest(in)))return false;}
+            if(Thread.currentThread().isInterrupted())return false;
+            Chapter c=n.asChapter();String hash=prefs.getString("complete-v2:"+c.key(),"");
+            if(hash.isEmpty())return false;
+            try(InputStream in=context.getContentResolver().openInputStream(Uri.parse(c.uri))){if(in==null||!hash.equals(digest(in)))return false;}
             completed.add(c.key());
         }
-        return Rules.deletionEligible(false,true,true,current,completed);
+        if(!Rules.deletionEligible(false,true,true,verified,completed))return false;
+        if(!root.equals(root())||!permission(root,true)||Thread.currentThread().isInterrupted()||!folderIdentity(tree,folder,id))return false;
+        Set<String> latest=snapshot(children(tree,id),id);
+        if(!Rules.stableSnapshot(expected,verified,latest)||!root.equals(root())||!permission(root,true)||Thread.currentThread().isInterrupted())return false;
+        if(!DocumentsContract.deleteDocument(context.getContentResolver(),folder))return false;
+        SharedPreferences.Editor e=prefs.edit().remove("pos:"+manga.uri).remove("added:"+manga.uri);
+        if(manga.uri.equals(prefs.getString("active","")))e.remove("active");
+        for(Chapter c:manga.chapters){String hash=prefs.getString("complete-v2:"+c.key(),"");e.remove("complete-v2:"+c.key());if(!hash.isEmpty())e.remove(masksKey(c.uri+"|"+hash));}
+        e.apply();return true;
     }
 }
